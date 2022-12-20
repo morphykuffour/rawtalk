@@ -1,26 +1,13 @@
-{ pkgs ? import <nixpkgs> { } }:
-let
-  dependencies = with pkgs; [
-    pkg-config
-    libusb1
-    hidapi
-  ];
-in
+{pkgs ? import <nixpkgs> {}}:
 with pkgs;
-mkShell {
+  mkShell {
+    nativeBuildInputs = [
+      pkg-config
+    ];
 
-  dependencies = dependencies;
-
-  packages = [
-    dependencies
-    # cowsay 
-  ];
-
-  buildInputs = [
-    dependencies
-  ];
-
-  nativeBuildInputs = [
-    pkgs.libusb1
-  ];
-}
+    buildInputs = [
+      hidapi
+      libusb1
+      rustc
+    ];
+  }
