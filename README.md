@@ -1,5 +1,5 @@
 ```bash
-nix develop
+nix develop -c $SHELL
 nix build
 nix run
 ```
