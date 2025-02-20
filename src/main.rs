@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             // Example: Send layer change command
             // The exact protocol depends on your QMK configuration
-            let layer_command = [0x00, 0x01]; // Replace with your keyboard's protocol
+            let layer_command = [0xFF, 0x01]; // Replace with your keyboard's protocol
             match device.write(&layer_command) {
                 Ok(res) => println!("Sent layer change command: {:?} bytes written", res),
                 Err(e) => eprintln!("Failed to send command: {}", e),
