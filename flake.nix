@@ -25,6 +25,7 @@
         
         buildInputs = with pkgs; [
           hidapi
+          systemd
         ];
 
         # Create udev rules
