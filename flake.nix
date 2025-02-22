@@ -27,6 +27,16 @@
           hidapi
         ];
 
+        # Create udev rules
+        udevRules = pkgs.writeTextFile {
+          name = "70-qmk-ferris.rules";
+          text = ''
+            SUBSYSTEMS=="usb", ATTRS{idVendor}=="c2ab", ATTRS{idProduct}=="3939", TAG+="uaccess"
+            KERNEL=="hidraw*", ATTRS{idVendor}=="c2ab", ATTRS{idProduct}=="3939", TAG+="uaccess"
+          '';
+          destination = "/etc/udev/rules.d/70-qmk-ferris.rules";
+        };
+
       in {
         devShells.default = pkgs.mkShell {
           inherit nativeBuildInputs buildInputs;
@@ -43,9 +53,10 @@
             lockFile = ./Cargo.lock;
           };
 
-          installPhase = ''
-            mkdir -p $out/bin
-            cp target/${pkgs.stdenv.hostPlatform.config}/release/qmk-layer-switcher $out/bin/
+          # Install udev rules during package installation
+          postInstall = ''
+            mkdir -p $out/lib/udev/rules.d
+            cp ${udevRules}/etc/udev/rules.d/* $out/lib/udev/rules.d/
           '';
         };
       }
