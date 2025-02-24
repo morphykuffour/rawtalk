@@ -16,7 +16,7 @@ enum Command {
     Layer3 = 0x33,
 }
 
-fn send_command(device: &hidapi::HidDevice, cmd: Command) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn send_command(device: &hidapi::HidDevice, cmd: Command) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
     let command = [cmd as u8, 0x00];  // Command format from auto_layers
     println!("Sending command: {:02X?}", command);
     
@@ -26,7 +26,11 @@ fn send_command(device: &hidapi::HidDevice, cmd: Command) -> Result<Vec<u8>, Box
     match device.read_timeout(&mut buf, 1000) {
         Ok(len) => {
             println!("Received response ({} bytes): {:02X?}", len, &buf[..len]);
-            Ok(buf[..len].to_vec())
+            if len > 0 {
+                Ok(Some(buf[..len].to_vec()))
+            } else {
+                Ok(None)  // No data received
+            }
         },
         Err(e) => Err(Box::new(e)),
     }
@@ -49,7 +53,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test connection by getting current layer
     println!("Testing connection by getting current layer...");
     match send_command(&device, Command::GetCurrentLayer) {
-        Ok(response) => println!("Current layer: {}", response[0]),
+        Ok(Some(response)) => println!("Current layer: {}", response[0]),
+        Ok(None) => println!("No response received from keyboard"),
         Err(e) => eprintln!("Failed to get current layer: {}", e),
     }
 
@@ -67,7 +72,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         match send_command(&device, cmd) {
-            Ok(_) => println!("Mode change successful"),
+            Ok(Some(_)) => println!("Mode change successful"),
+            Ok(None) => println!("No response received from keyboard"),
             Err(e) => eprintln!("Failed to change mode: {}", e),
         }
     }
