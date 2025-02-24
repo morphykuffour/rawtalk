@@ -6,6 +6,7 @@ use std::io::{self, BufRead};
 
 const VIM_MODE_FILE: &str = "/tmp/vim_mode";
 const BUFFER_SIZE: usize = 32;
+const RAW_EPSIZE: usize = 32;  // Must match QMK's RAW_EPSIZE
 
 #[derive(Debug)]
 enum Command {
@@ -17,19 +18,24 @@ enum Command {
 }
 
 fn send_command(device: &hidapi::HidDevice, cmd: Command) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
-    let command = [cmd as u8, 0x00];  // Command format from auto_layers
-    println!("Sending command: {:02X?}", command);
+    // Create a properly sized buffer
+    let mut command_buffer = vec![0u8; RAW_EPSIZE];
+    command_buffer[0] = cmd as u8;  // First byte is command
     
-    device.write(&command)?;
+    println!("Sending command: {:02X?}", command_buffer);
     
-    let mut buf = [0u8; BUFFER_SIZE];
+    // Write full buffer
+    device.write(&command_buffer)?;
+    
+    // Read with correct buffer size
+    let mut buf = vec![0u8; RAW_EPSIZE];
     match device.read_timeout(&mut buf, 1000) {
         Ok(len) => {
             println!("Received response ({} bytes): {:02X?}", len, &buf[..len]);
             if len > 0 {
                 Ok(Some(buf[..len].to_vec()))
             } else {
-                Ok(None)  // No data received
+                Ok(None)
             }
         },
         Err(e) => Err(Box::new(e)),
