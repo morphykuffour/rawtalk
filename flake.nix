@@ -25,7 +25,8 @@
         
         buildInputs = with pkgs; [
           hidapi
-          systemd
+        ] ++ pkgs.lib.optionals stdenv.isLinux [
+          systemd  # Only included on Linux
         ];
 
         # Create udev rules
