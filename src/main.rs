@@ -69,18 +69,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let reader = io::BufReader::new(file);
 
     for line in reader.lines() {
-        let cmd = match line?.as_str() {
-            "n" => Command::Layer0,  // Normal mode
-            "i" => Command::Layer1,  // Insert mode
-            "v" => Command::Layer2,  // Visual mode
-            "c" => Command::Layer3,  // Command mode
+        let mode = match line?.as_str() {
+            "i" => [0x00, 0x00],  // Insert mode -> Layer 0
+            "n" | "v" | "c" => [0x00, 0x03],  // All other modes -> Layer 3
             _ => continue,
         };
 
-        match send_command(&device, cmd) {
-            Ok(Some(_)) => println!("Mode change successful"),
-            Ok(None) => println!("No response received from keyboard"),
-            Err(e) => eprintln!("Failed to change mode: {}", e),
+        // Send the command
+        match device.write(&mode) {
+            Ok(_) => {
+                println!("Sent mode change command: {:02X?}", mode);
+                
+                // Read the response
+                let mut buf = [0u8; BUFFER_SIZE];
+                match device.read_timeout(&mut buf, 100) {
+                    Ok(len) => {
+                        println!("Received response ({} bytes): {:02X?}", len, &buf[..len]);
+                        match (buf[0], buf[1], buf[2]) {
+                            (0x00, m, 0xAA) => println!("Mode change successful (mode: {:02X})", m),
+                            _ => println!("Unexpected response"),
+                        }
+                    },
+                    Err(e) => eprintln!("Failed to read response: {}", e),
+                }
+            },
+            Err(e) => eprintln!("Failed to send command: {}", e),
         }
     }
 
