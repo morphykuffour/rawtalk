@@ -44,6 +44,32 @@ fn send_command(device: &hidapi::HidDevice, cmd: Command) -> Result<Option<Vec<u
     }
 }
 
+fn send_layer_command(device: &hidapi::HidDevice, layer: u8) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
+    // Create full-size buffer (32 bytes)
+    let mut command_buffer = vec![0u8; RAW_EPSIZE];
+    command_buffer[0] = 0x00;  // Layer switch command
+    command_buffer[1] = layer; // Target layer
+    
+    println!("Sending layer command: {:02X?}", command_buffer);
+    
+    // Write full buffer
+    device.write(&command_buffer)?;
+    
+    // Read response
+    let mut buf = vec![0u8; RAW_EPSIZE];
+    match device.read_timeout(&mut buf, 100) {
+        Ok(len) => {
+            println!("Received response ({} bytes): {:02X?}", len, &buf[..len]);
+            if len > 0 {
+                Ok(Some(buf[..len].to_vec()))
+            } else {
+                Ok(None)
+            }
+        },
+        Err(e) => Err(Box::new(e)),
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api = HidApi::new()?;
     let (VID, PID) = (0xC2AB, 0x3939);
@@ -84,30 +110,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if current_mode != last_mode {
             println!("Mode changed from '{}' to '{}'", last_mode, current_mode);
             
-            let mode = match current_mode {
-                "i" => [0x00, 0x00],  // Insert mode -> Layer 0
-                "n" | "v" | "c" => [0x00, 0x03],  // All other modes -> Layer 3
+            let layer = match current_mode {
+                "i" => 0u8,  // Insert mode -> Layer 0
+                "n" | "v" | "c" => 3u8,  // All other modes -> Layer 3
                 _ => continue,
             };
 
-            // Send the command
-            match device.write(&mode) {
-                Ok(_) => {
-                    println!("Sent mode change command: {:02X?}", mode);
-                    
-                    let mut buf = [0u8; BUFFER_SIZE];
-                    match device.read_timeout(&mut buf, 100) {
-                        Ok(len) => {
-                            println!("Received response ({} bytes): {:02X?}", len, &buf[..len]);
-                            match (buf[0], buf[1], buf[2]) {
-                                (0x00, m, 0xAA) => println!("Mode change successful (mode: {:02X})", m),
-                                _ => println!("Unexpected response"),
-                            }
-                        },
-                        Err(e) => eprintln!("Failed to read response: {}", e),
+            match send_layer_command(&device, layer) {
+                Ok(Some(response)) => {
+                    match (response[0], response[1], response[2]) {
+                        (0x00, layer, 0xAA) => println!("Layer switch successful (layer: {})", layer),
+                        _ => println!("Unexpected response: {:02X?}", &response[..3]),
                     }
                 },
-                Err(e) => eprintln!("Failed to send command: {}", e),
+                Ok(None) => println!("No response received"),
+                Err(e) => eprintln!("Error: {}", e),
             }
             
             last_mode = current_mode.to_string();
