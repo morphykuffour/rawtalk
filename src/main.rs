@@ -5,8 +5,9 @@ use std::fs::File;
 use std::io::{self, BufRead, Seek, SeekFrom};
 use std::thread::sleep;
 use std::time::Duration;
+use std::env;
+use std::path::PathBuf;
 
-const VIM_MODE_FILE: &str = "/tmp/vim_mode";
 const BUFFER_SIZE: usize = 32;
 const RAW_EPSIZE: usize = 32;  // Must match QMK's RAW_EPSIZE
 
@@ -17,6 +18,20 @@ enum Command {
     Layer1 = 0x31,
     Layer2 = 0x32,
     Layer3 = 0x33,
+}
+
+fn get_vim_mode_path() -> PathBuf {
+    // First check if VIM_MODE_FILE env var is set
+    if let Ok(path) = env::var("VIM_MODE_FILE") {
+        return PathBuf::from(path);
+    }
+
+    // Fall back to default locations based on OS
+    if cfg!(windows) {
+        PathBuf::from(r"C:\tmp\vim_mode.txt")
+    } else {
+        PathBuf::from("/tmp/vim_mode")
+    }
 }
 
 fn send_command(device: &hidapi::HidDevice, cmd: Command) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
@@ -45,9 +60,10 @@ fn send_command(device: &hidapi::HidDevice, cmd: Command) -> Result<Option<Vec<u
 }
 
 fn send_layer_command(device: &hidapi::HidDevice, layer: u8) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
-    let mut command_buffer = vec![0u8; 32];  // 32-byte buffer
-    command_buffer[0] = 0x00;  // Layer switch command
+    let mut command_buffer = vec![0u8; 32];
+    command_buffer[0] = 0x01;  // Command ID for layer switch
     command_buffer[1] = layer; // Target layer
+    command_buffer[2] = 0xAA;  // Verification byte
     
     println!("Sending layer command: {:02X?}", command_buffer);
     match device.write(&command_buffer) {
@@ -55,7 +71,6 @@ fn send_layer_command(device: &hidapi::HidDevice, layer: u8) -> Result<Option<Ve
         Err(e) => println!("Write error: {}", e),
     }
     
-    // Increase timeout to 1000ms
     let mut buf = vec![0u8; 32];
     match device.read_timeout(&mut buf, 1000) {
         Ok(len) => {
@@ -76,11 +91,11 @@ fn send_layer_command(device: &hidapi::HidDevice, layer: u8) -> Result<Option<Ve
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api = HidApi::new()?;
-    let (VID, PID) = (0xC2AB, 0x3939);
+    let (vid, pid) = (0xC2AB, 0x3939);
     
     let device_info = api.device_list()
-        .find(|d| d.vendor_id() == VID 
-            && d.product_id() == PID
+        .find(|d| d.vendor_id() == vid 
+            && d.product_id() == pid
             && d.usage_page() == 0xFF60)
         .ok_or("Could not find Raw HID interface")?;
 
@@ -88,7 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Connected to Ferris sweep Raw HID interface!");
 
     // Continuously monitor vim_mode file
-    let mut file = File::open(VIM_MODE_FILE)?;
+    let mut file = File::open(get_vim_mode_path())?;
     let mut last_mode = String::new();
     
     // Read initial vim mode
