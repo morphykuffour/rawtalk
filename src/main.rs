@@ -45,28 +45,32 @@ fn send_command(device: &hidapi::HidDevice, cmd: Command) -> Result<Option<Vec<u
 }
 
 fn send_layer_command(device: &hidapi::HidDevice, layer: u8) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
-    // Create full-size buffer (32 bytes)
-    let mut command_buffer = vec![0u8; RAW_EPSIZE];
+    let mut command_buffer = vec![0u8; 32];  // 32-byte buffer
     command_buffer[0] = 0x00;  // Layer switch command
     command_buffer[1] = layer; // Target layer
     
     println!("Sending layer command: {:02X?}", command_buffer);
+    match device.write(&command_buffer) {
+        Ok(len) => println!("Wrote {} bytes", len),
+        Err(e) => println!("Write error: {}", e),
+    }
     
-    // Write full buffer
-    device.write(&command_buffer)?;
-    
-    // Read response
-    let mut buf = vec![0u8; RAW_EPSIZE];
-    match device.read_timeout(&mut buf, 100) {
+    // Increase timeout to 1000ms
+    let mut buf = vec![0u8; 32];
+    match device.read_timeout(&mut buf, 1000) {
         Ok(len) => {
-            println!("Received response ({} bytes): {:02X?}", len, &buf[..len]);
             if len > 0 {
+                println!("Received response ({} bytes): {:02X?}", len, &buf[..len]);
                 Ok(Some(buf[..len].to_vec()))
             } else {
+                println!("No data received (timeout)");
                 Ok(None)
             }
         },
-        Err(e) => Err(Box::new(e)),
+        Err(e) => {
+            println!("Read error: {}", e);
+            Err(Box::new(e))
+        },
     }
 }
 
@@ -83,17 +87,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device = device_info.open_device(&api)?;
     println!("Connected to Ferris sweep Raw HID interface!");
 
-    // Test connection
-    println!("Testing connection by getting current layer...");
-    match send_command(&device, Command::GetCurrentLayer) {
-        Ok(Some(response)) => println!("Current layer: {}", response[0]),
-        Ok(None) => println!("No response received from keyboard"),
-        Err(e) => eprintln!("Failed to get current layer: {}", e),
-    }
-
     // Continuously monitor vim_mode file
     let mut file = File::open(VIM_MODE_FILE)?;
     let mut last_mode = String::new();
+    
+    // Read initial vim mode
+    let mut current_mode = String::new();
+    let mut reader = io::BufReader::new(&file);
+    reader.read_line(&mut current_mode)?;
+    let current_mode = current_mode.trim();
+    println!("Initial vim mode: '{}'", current_mode);
+    
+    // Set initial layer based on current mode
+    let layer = match current_mode {
+        "i" => {
+            println!("Detected insert mode, setting layer 0");
+            0u8
+        },
+        "n" | "v" | "c" => {
+            println!("Detected normal/visual/command mode, setting layer 3");
+            3u8
+        },
+        _ => {
+            println!("Unknown mode '{}', defaulting to layer 0", current_mode);
+            0u8
+        },
+    };
+    
+    // Send initial layer command
+    println!("Sending initial layer command for layer {}", layer);
+    match send_layer_command(&device, layer) {
+        Ok(Some(response)) => {
+            match (response[0], response[1], response[2]) {
+                (0x00, layer, 0xAA) => println!("Initial layer set to: {}", layer),
+                _ => println!("Unexpected response: {:02X?}", &response[..3]),
+            }
+        },
+        Ok(None) => println!("No response received"),
+        Err(e) => eprintln!("Error: {}", e),
+    }
+    
+    last_mode = current_mode.to_string();
     
     loop {
         // Reset file position to start
@@ -102,18 +136,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut current_mode = String::new();
         let mut reader = io::BufReader::new(&file);
         reader.read_line(&mut current_mode)?;
-        
-        // Trim whitespace and newlines
         let current_mode = current_mode.trim();
         
-        // Only send command if mode changed
+        // Only process and print when mode changes
         if current_mode != last_mode {
-            println!("Mode changed from '{}' to '{}'", last_mode, current_mode);
+            println!("Mode changed: '{}' -> '{}'", last_mode, current_mode);
             
             let layer = match current_mode {
-                "i" => 0u8,  // Insert mode -> Layer 0
-                "n" | "v" | "c" => 3u8,  // All other modes -> Layer 3
-                _ => continue,
+                "i" => {
+                    println!("Switching to insert mode (layer 0)");
+                    0u8
+                },
+                "n" | "v" | "c" => {
+                    println!("Switching to normal/visual/command mode (layer 3)");
+                    3u8
+                },
+                _ => {
+                    println!("Unknown mode '{}', skipping", current_mode);
+                    continue;
+                },
             };
 
             match send_layer_command(&device, layer) {
