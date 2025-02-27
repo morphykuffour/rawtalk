@@ -59,24 +59,74 @@ fn send_command(device: &hidapi::HidDevice, cmd: Command) -> Result<Option<Vec<u
     }
 }
 
-fn send_layer_command(device: &hidapi::HidDevice, layer: u8) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
-    let mut command_buffer = vec![0u8; 32];
-    command_buffer[0] = 0x01;  // Command ID for layer switch
-    command_buffer[1] = layer; // Target layer
-    command_buffer[2] = 0xAA;  // Verification byte
+fn find_keyboard(api: &HidApi) -> Result<hidapi::HidDevice, Box<dyn std::error::Error>> {
+    const KEYBOARD_VID: u16 = 0xC2AB;
+    const KEYBOARD_PID: u16 = 0x3939;
+    const USAGE_PAGE: u16 = 0xFF60;  // QMK's usage page
+    const USAGE: u16 = 0x61;         // QMK's usage
     
-    println!("Sending layer command: {:02X?}", command_buffer);
-    match device.write(&command_buffer) {
-        Ok(len) => println!("Wrote {} bytes", len),
-        Err(e) => println!("Write error: {}", e),
+    for device in api.device_list() {
+        if device.vendor_id() == KEYBOARD_VID 
+           && device.product_id() == KEYBOARD_PID 
+           && device.usage_page() == USAGE_PAGE 
+           && device.usage() == USAGE {
+            match device.open_device(api) {
+                Ok(dev) => {
+                    println!("Found keyboard at path: {}", device.path().to_string_lossy());
+                    return Ok(dev)
+                },
+                Err(e) => {
+                    println!("Found keyboard but failed to open: {}", e);
+                    continue;
+                }
+            }
+        }
     }
     
-    let mut buf = vec![0u8; 32];
-    match device.read_timeout(&mut buf, 1000) {
+    Err("Keyboard not found or access denied. Make sure you have the right permissions.".into())
+}
+
+fn send_layer_command(device: &hidapi::HidDevice, layer: u8) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
+    let mut command_buffer = vec![0u8; 32];
+    command_buffer[0] = 0x00;  // Layer switch command
+    command_buffer[1] = layer; // Target layer (0-3)
+    
+    println!("Sending layer command: {:02X?}", command_buffer);
+    
+    match device.write(&command_buffer) {
+        Ok(written) => {
+            println!("Wrote {} bytes", written);
+            if written != 32 {
+                println!("Warning: Expected to write 32 bytes, wrote {}", written);
+            }
+        },
+        Err(e) => {
+            println!("Failed to write to device: {}", e);
+            return Err(e.into());
+        }
+    }
+    
+    sleep(Duration::from_millis(50));
+    
+    let mut response = vec![0u8; 32];
+    match device.read_timeout(&mut response, 1000) {
         Ok(len) => {
             if len > 0 {
-                println!("Received response ({} bytes): {:02X?}", len, &buf[..len]);
-                Ok(Some(buf[..len].to_vec()))
+                println!("Received response ({} bytes): {:02X?}", len, &response[..len]);
+                match response[0] {
+                    0x00 => {
+                        println!("Layer switched successfully to colemak-dh, new layer: {}", response[1]);
+                        Ok(Some(response[..len].to_vec()))
+                    },
+                    0xFF => {
+                        println!("Layer switched successfully to qwerty");
+                        Ok(Some(response[..len].to_vec()))
+                    },
+                    _ => {
+                        println!("Unexpected response code: 0x{:02X}", response[0]);
+                        Ok(Some(response[..len].to_vec()))
+                    }
+                }
             } else {
                 println!("No data received (timeout)");
                 Ok(None)
@@ -84,29 +134,22 @@ fn send_layer_command(device: &hidapi::HidDevice, layer: u8) -> Result<Option<Ve
         },
         Err(e) => {
             println!("Read error: {}", e);
-            Err(Box::new(e))
+            Err(e.into())
         },
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api = HidApi::new()?;
-    let (vid, pid) = (0xC2AB, 0x3939);
     
-    let device_info = api.device_list()
-        .find(|d| d.vendor_id() == vid 
-            && d.product_id() == pid
-            && d.usage_page() == 0xFF60)
-        .ok_or("Could not find Raw HID interface")?;
-
-    let device = device_info.open_device(&api)?;
+    // Find our keyboard
+    let device = find_keyboard(&api)?;
     println!("Connected to Ferris sweep Raw HID interface!");
 
-    // Continuously monitor vim_mode file
-    let mut file = File::open(get_vim_mode_path())?;
-    let mut last_mode = String::new();
+    let mode_path = get_vim_mode_path();
+    let mut file = File::open(&mode_path)?;
     
-    // Read initial vim mode
+    // Read initial mode
     let mut current_mode = String::new();
     let mut reader = io::BufReader::new(&file);
     reader.read_line(&mut current_mode)?;
@@ -116,36 +159,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set initial layer based on current mode
     let layer = match current_mode {
         "i" => {
-            println!("Detected insert mode, setting layer 0");
-            0u8
-        },
-        "n" | "v" | "c" => {
-            println!("Detected normal/visual/command mode, setting layer 3");
+            println!("Detected insert mode, setting layer 3 (colemak-dh)");
             3u8
         },
         _ => {
-            println!("Unknown mode '{}', defaulting to layer 0", current_mode);
-            0u8
+            println!("Detected other mode, setting layer 1 (qwerty)");
+            1u8
         },
     };
     
-    // Send initial layer command
     println!("Sending initial layer command for layer {}", layer);
-    match send_layer_command(&device, layer) {
-        Ok(Some(response)) => {
-            match (response[0], response[1], response[2]) {
-                (0x00, layer, 0xAA) => println!("Initial layer set to: {}", layer),
-                _ => println!("Unexpected response: {:02X?}", &response[..3]),
-            }
-        },
-        Ok(None) => println!("No response received"),
-        Err(e) => eprintln!("Error: {}", e),
-    }
+    send_layer_command(&device, layer)?;
     
-    last_mode = current_mode.to_string();
+    let mut last_mode = current_mode.to_string();
     
     loop {
-        // Reset file position to start
         file.seek(SeekFrom::Start(0))?;
         
         let mut current_mode = String::new();
@@ -153,40 +181,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         reader.read_line(&mut current_mode)?;
         let current_mode = current_mode.trim();
         
-        // Only process and print when mode changes
         if current_mode != last_mode {
             println!("Mode changed: '{}' -> '{}'", last_mode, current_mode);
             
             let layer = match current_mode {
                 "i" => {
-                    println!("Switching to insert mode (layer 0)");
-                    0u8
-                },
-                "n" | "v" | "c" => {
-                    println!("Switching to normal/visual/command mode (layer 3)");
+                    println!("Switching to insert mode (layer 3 - colemak-dh)");
                     3u8
                 },
                 _ => {
-                    println!("Unknown mode '{}', skipping", current_mode);
-                    continue;
+                    println!("Switching to other mode (layer 1 - qwerty)");
+                    1u8
                 },
             };
 
-            match send_layer_command(&device, layer) {
-                Ok(Some(response)) => {
-                    match (response[0], response[1], response[2]) {
-                        (0x00, layer, 0xAA) => println!("Layer switch successful (layer: {})", layer),
-                        _ => println!("Unexpected response: {:02X?}", &response[..3]),
-                    }
-                },
-                Ok(None) => println!("No response received"),
-                Err(e) => eprintln!("Error: {}", e),
-            }
-            
+            send_layer_command(&device, layer)?;
             last_mode = current_mode.to_string();
         }
         
-        // Small delay to prevent busy-waiting
         sleep(Duration::from_millis(100));
     }
 }
