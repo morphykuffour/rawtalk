@@ -60,20 +60,49 @@ fn send_command(device: &hidapi::HidDevice, cmd: Command) -> Result<Option<Vec<u
 }
 
 fn find_keyboard(api: &HidApi) -> Result<hidapi::HidDevice, Box<dyn std::error::Error>> {
-    const KEYBOARD_VID: u16 = 0xC2AB;
-    const KEYBOARD_PID: u16 = 0x3939;
-    const USAGE_PAGE: u16 = 0xFF60;  // QMK's usage page
-    const USAGE: u16 = 0x61;         // QMK's usage
+    const VID: u16 = 0xC2AB;
+    const PID: u16 = 0x3939;
+    const USAGE_PAGE: u16 = 0xFF60;
     
+    println!("Searching for keyboard (VID: {:04X}, PID: {:04X}, Usage Page: {:04X})", VID, PID, USAGE_PAGE);
+    
+    // List all HID devices first
+    println!("\nAvailable HID devices:");
     for device in api.device_list() {
-        if device.vendor_id() == KEYBOARD_VID 
-           && device.product_id() == KEYBOARD_PID 
-           && device.usage_page() == USAGE_PAGE 
-           && device.usage() == USAGE {
+        println!("Device: VID={:04X}, PID={:04X}, Usage Page={:04X}, Path={}",
+            device.vendor_id(),
+            device.product_id(),
+            device.usage_page(),
+            device.path().to_string_lossy()
+        );
+    }
+    
+    // Now try to find our specific device
+    for device in api.device_list() {
+        if device.vendor_id() == VID 
+           && device.product_id() == PID 
+           && device.usage_page() == USAGE_PAGE {
+            
+            println!("\nFound matching keyboard:");
+            println!("Path: {}", device.path().to_string_lossy());
+            println!("Manufacturer: {}", device.manufacturer_string().unwrap_or("Unknown"));
+            println!("Product: {}", device.product_string().unwrap_or("Unknown"));
+            println!("Serial: {}", device.serial_number().unwrap_or("Unknown"));
+            println!("Interface: {}", device.interface_number());
+            println!("Usage Page: {:04X}", device.usage_page());
+            
             match device.open_device(api) {
                 Ok(dev) => {
-                    println!("Found keyboard at path: {}", device.path().to_string_lossy());
-                    return Ok(dev)
+                    #[cfg(target_os = "macos")]
+                    {
+                        println!("Setting macOS-specific device options...");
+                        // Try both blocking and non-blocking modes
+                        if let Err(e) = dev.set_blocking_mode(true) {
+                            println!("Warning: Could not set blocking mode: {}", e);
+                        }
+                    }
+                    println!("Successfully opened device!");
+                    return Ok(dev);
                 },
                 Err(e) => {
                     println!("Found keyboard but failed to open: {}", e);
@@ -83,71 +112,74 @@ fn find_keyboard(api: &HidApi) -> Result<hidapi::HidDevice, Box<dyn std::error::
         }
     }
     
-    Err("Keyboard not found or access denied. Make sure you have the right permissions.".into())
+    Err("Keyboard not found or access denied. Available devices listed above.".into())
 }
 
 fn send_layer_command(device: &hidapi::HidDevice, layer: u8) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
-    let mut command_buffer = vec![0u8; 32];
+    let mut command_buffer = vec![0u8; RAW_EPSIZE];
     command_buffer[0] = 0x00;  // Layer switch command
-    command_buffer[1] = layer; // Target layer (0-3)
+    command_buffer[1] = layer; // Target layer
     
     println!("Sending layer command: {:02X?}", command_buffer);
-    
     match device.write(&command_buffer) {
-        Ok(written) => {
-            println!("Wrote {} bytes", written);
-            if written != 32 {
-                println!("Warning: Expected to write 32 bytes, wrote {}", written);
-            }
-        },
+        Ok(len) => println!("Wrote {} bytes", len),
         Err(e) => {
-            println!("Failed to write to device: {}", e);
-            return Err(e.into());
+            println!("Write error: {}", e);
+            return Err(Box::new(e));
         }
     }
     
-    sleep(Duration::from_millis(50));
-    
-    let mut response = vec![0u8; 32];
-    match device.read_timeout(&mut response, 1000) {
-        Ok(len) => {
-            if len > 0 {
-                println!("Received response ({} bytes): {:02X?}", len, &response[..len]);
-                match response[0] {
-                    0x00 => {
-                        println!("Layer switched successfully to colemak-dh, new layer: {}", response[1]);
-                        Ok(Some(response[..len].to_vec()))
-                    },
-                    0xFF => {
-                        println!("Layer switched successfully to qwerty");
-                        Ok(Some(response[..len].to_vec()))
-                    },
-                    _ => {
-                        println!("Unexpected response code: 0x{:02X}", response[0]);
-                        Ok(Some(response[..len].to_vec()))
-                    }
-                }
-            } else {
-                println!("No data received (timeout)");
-                Ok(None)
+    // Try multiple reads with different timeouts
+    for timeout in [100, 500, 1000] {
+        println!("Attempting read with {}ms timeout...", timeout);
+        let mut buf = vec![0u8; RAW_EPSIZE];
+        match device.read_timeout(&mut buf, timeout) {
+            Ok(len) if len > 0 => {
+                println!("Received response ({} bytes): {:02X?}", len, &buf[..len]);
+                return Ok(Some(buf[..len].to_vec()));
             }
-        },
-        Err(e) => {
-            println!("Read error: {}", e);
-            Err(e.into())
-        },
+            Ok(_) => continue,
+            Err(e) => {
+                println!("Read error ({}ms): {}", timeout, e);
+                continue;
+            }
+        }
     }
+    
+    println!("No response after multiple attempts");
+    Ok(None)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api = HidApi::new()?;
+    let (VID, PID) = (0xC2AB, 0x3939);
     
-    // Find our keyboard
-    let device = find_keyboard(&api)?;
+    // Platform-specific device initialization
+    let device = match find_keyboard(&api) {
+        Ok(dev) => dev,
+        Err(e) => {
+            eprintln!("Failed to open keyboard: {}", e);
+            eprintln!("On Linux/macOS, ensure you have the correct udev rules/permissions:");
+            eprintln!("Linux: Add udev rule to /etc/udev/rules.d/50-qmk.rules:");
+            eprintln!("SUBSYSTEM==\"usb\", ATTR{{idVendor}}==\"C2AB\", ATTR{{idProduct}}==\"3939\", MODE=\"0666\"");
+            eprintln!("macOS: No special permissions needed, but try running without sudo");
+            return Err(e);
+        }
+    };
+
     println!("Connected to Ferris sweep Raw HID interface!");
 
     let mode_path = get_vim_mode_path();
-    let mut file = File::open(&mode_path)?;
+    let mut file = match File::open(&mode_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Failed to open vim mode file at {:?}", mode_path);
+            eprintln!("Error: {}", e);
+            eprintln!("Make sure the file exists and contains the current vim mode.");
+            eprintln!("You can set a custom path using the VIM_MODE_FILE environment variable.");
+            return Err(e.into());
+        }
+    };
     
     // Read initial mode
     let mut current_mode = String::new();
