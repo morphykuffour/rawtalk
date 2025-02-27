@@ -13,8 +13,8 @@ curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix 
 ```bash
 nix develop -c $SHELL
 nix build
-sudo $(which nix) run 
-# nix run 
+nix run 
+# sudo $(which nix) run 
 ```
 
 
