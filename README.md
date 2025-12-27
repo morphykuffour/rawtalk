@@ -38,10 +38,11 @@ Add to `keymap.c`:
 ```c
 void raw_hid_receive_kb(uint8_t *data, uint8_t length) {
     if (data[0] == 0x00 && data[1] <= 3) {
-        set_single_persistent_default_layer(data[1]);
+        set_single_default_layer(data[1]);
         data[0] = 0x00;
         data[1] = data[1];
         data[2] = 0xAA;
+        raw_hid_send(data, length);
     }
 }
 ```
