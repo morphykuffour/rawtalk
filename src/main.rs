@@ -6,8 +6,8 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use std::{fs, thread};
 
-const VID: u16 = 0xC2AB;
-const PID: u16 = 0x3939;
+const VID: u16 = 0xFEED;
+const PID: u16 = 0x1212;
 const USAGE_PAGE: u16 = 0xFF60;
 const USAGE: u16 = 0x61;
 const SOCKET: &str = "/tmp/rawtalk.sock";
